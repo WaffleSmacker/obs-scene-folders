@@ -5,6 +5,7 @@
 #include <obs.hpp>
 
 #include <QWidget>
+#include <QLineEdit>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QMenu>
@@ -41,10 +42,17 @@ private:
 	void renameFolder(QTreeWidgetItem *item);
 	void deleteFolder(QTreeWidgetItem *item);
 	void removeFromFolder(QTreeWidgetItem *item);
+	void sortAlphabetically();
+	void filterScenes(const QString &text);
+	void highlightActiveScene(const QString &name);
+	void updateItemStyles();
 	void switchToScene(const QString &sceneName);
+
+	QString activeSceneName;
 
 	QString configFilePath();
 
+	QLineEdit *searchBar = nullptr;
 	QTreeWidget *tree = nullptr;
 	QTimer *saveTimer = nullptr;
 	bool shuttingDown = false;

@@ -18,6 +18,13 @@ SceneFolderWidget::SceneFolderWidget(QWidget *parent) : QWidget(parent)
 {
 	QVBoxLayout *layout = new QVBoxLayout(this);
 	layout->setContentsMargins(0, 0, 0, 0);
+	layout->setSpacing(0);
+
+	/* Search bar */
+	searchBar = new QLineEdit(this);
+	searchBar->setPlaceholderText("Search scenes...");
+	searchBar->setClearButtonEnabled(true);
+	layout->addWidget(searchBar);
 
 	tree = new QTreeWidget(this);
 	tree->setHeaderHidden(true);
@@ -29,12 +36,24 @@ SceneFolderWidget::SceneFolderWidget(QWidget *parent) : QWidget(parent)
 	tree->setDragDropMode(QAbstractItemView::InternalMove);
 	tree->setDefaultDropAction(Qt::MoveAction);
 	tree->setDragEnabled(true);
+
+	/* Style: keep selection highlight visible even when unfocused */
+	tree->setStyleSheet(
+		"QTreeWidget::item:selected {"
+		"  background-color: #3A7BD5;"
+		"  color: #ffffff;"
+		"}"
+		"QTreeWidget::item:hover:!selected {"
+		"  background-color: #3a3a3a;"
+		"}");
 	tree->viewport()->setAcceptDrops(true);
 	tree->setDropIndicatorShown(true);
 
 	layout->addWidget(tree);
 
 	/* Connections */
+	connect(searchBar, &QLineEdit::textChanged, this,
+		&SceneFolderWidget::filterScenes);
 	connect(tree, &QTreeWidget::itemDoubleClicked, this,
 		&SceneFolderWidget::onItemDoubleClicked);
 	connect(tree, &QTreeWidget::customContextMenuRequested, this,
@@ -100,16 +119,7 @@ void SceneFolderWidget::onFrontendEvent(enum obs_frontend_event event,
 			if (src) {
 				QString name = QString::fromUtf8(
 					obs_source_get_name(src));
-				QTreeWidgetItemIterator it(w->tree);
-				while (*it) {
-					if ((*it)->data(0, ROLE_ITEM_TYPE)
-						    .toInt() == TYPE_SCENE &&
-					    (*it)->text(0) == name) {
-						w->tree->setCurrentItem(*it);
-						break;
-					}
-					++it;
-				}
+				w->highlightActiveScene(name);
 			}
 		}
 		break;
@@ -133,7 +143,8 @@ QTreeWidgetItem *SceneFolderWidget::createFolderItem(const QString &name)
 	item->setText(0, name);
 	item->setData(0, ROLE_ITEM_TYPE, TYPE_FOLDER);
 	item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable |
-		       Qt::ItemIsDropEnabled | Qt::ItemIsEditable);
+		       Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled |
+		       Qt::ItemIsEditable);
 	item->setIcon(0,
 		      qApp->style()->standardIcon(QStyle::SP_DirIcon));
 
@@ -218,16 +229,7 @@ void SceneFolderWidget::refreshSceneList()
 	if (current) {
 		QString currentName =
 			QString::fromUtf8(obs_source_get_name(current));
-		QTreeWidgetItemIterator selIt(tree);
-		while (*selIt) {
-			if ((*selIt)->data(0, ROLE_ITEM_TYPE).toInt() ==
-				    TYPE_SCENE &&
-			    (*selIt)->text(0) == currentName) {
-				tree->setCurrentItem(*selIt);
-				break;
-			}
-			++selIt;
-		}
+		highlightActiveScene(currentName);
 	}
 
 	saveTimer->start();
@@ -263,6 +265,12 @@ void SceneFolderWidget::onCustomContextMenu(const QPoint &pos)
 		QAction *newFolder = menu.addAction("New Folder");
 		connect(newFolder, &QAction::triggered, this,
 			&SceneFolderWidget::createFolder);
+
+		menu.addSeparator();
+
+		QAction *sortAZ = menu.addAction("Sort All A-Z");
+		connect(sortAZ, &QAction::triggered, this,
+			&SceneFolderWidget::sortAlphabetically);
 	} else {
 		int type = item->data(0, ROLE_ITEM_TYPE).toInt();
 
@@ -280,6 +288,10 @@ void SceneFolderWidget::onCustomContextMenu(const QPoint &pos)
 			QAction *newFolder = menu.addAction("New Folder");
 			connect(newFolder, &QAction::triggered, this,
 				&SceneFolderWidget::createFolder);
+
+			QAction *sortAZ = menu.addAction("Sort All A-Z");
+			connect(sortAZ, &QAction::triggered, this,
+				&SceneFolderWidget::sortAlphabetically);
 
 		} else if (type == TYPE_SCENE) {
 			QAction *switchTo =
@@ -340,6 +352,10 @@ void SceneFolderWidget::onCustomContextMenu(const QPoint &pos)
 			QAction *newFolder = menu.addAction("New Folder");
 			connect(newFolder, &QAction::triggered, this,
 				&SceneFolderWidget::createFolder);
+
+			QAction *sortAZ = menu.addAction("Sort All A-Z");
+			connect(sortAZ, &QAction::triggered, this,
+				&SceneFolderWidget::sortAlphabetically);
 		}
 	}
 
@@ -365,7 +381,16 @@ void SceneFolderWidget::createFolder()
 	}
 
 	QTreeWidgetItem *folder = createFolderItem(name);
-	tree->insertTopLevelItem(0, folder);
+	/* Insert after the currently selected item, or at the end */
+	QTreeWidgetItem *current = tree->currentItem();
+	if (current) {
+		QTreeWidgetItem *topLevel =
+			current->parent() ? current->parent() : current;
+		int idx = tree->indexOfTopLevelItem(topLevel);
+		tree->insertTopLevelItem(idx + 1, folder);
+	} else {
+		tree->addTopLevelItem(folder);
+	}
 	folder->setExpanded(true);
 	saveTimer->start();
 }
@@ -408,6 +433,85 @@ void SceneFolderWidget::removeFromFolder(QTreeWidgetItem *item)
 		parent->removeChild(item);
 		tree->addTopLevelItem(item);
 		saveTimer->start();
+	}
+}
+
+void SceneFolderWidget::sortAlphabetically()
+{
+	/* Sort scenes inside each folder */
+	for (int i = 0; i < tree->topLevelItemCount(); i++) {
+		QTreeWidgetItem *item = tree->topLevelItem(i);
+		if (item->data(0, ROLE_ITEM_TYPE).toInt() == TYPE_FOLDER)
+			item->sortChildren(0, Qt::AscendingOrder);
+	}
+
+	/* Sort all top-level items alphabetically,
+	   folders and scenes mixed together. */
+	tree->sortItems(0, Qt::AscendingOrder);
+
+	saveTimer->start();
+}
+
+void SceneFolderWidget::filterScenes(const QString &text)
+{
+	QString filter = text.trimmed().toLower();
+
+	for (int i = 0; i < tree->topLevelItemCount(); i++) {
+		QTreeWidgetItem *item = tree->topLevelItem(i);
+		int type = item->data(0, ROLE_ITEM_TYPE).toInt();
+
+		if (type == TYPE_SCENE) {
+			bool match = filter.isEmpty() ||
+				     item->text(0).toLower().contains(filter);
+			item->setHidden(!match);
+		} else if (type == TYPE_FOLDER) {
+			/* Show folder if any child scene matches */
+			bool anyChildVisible = false;
+			for (int j = 0; j < item->childCount(); j++) {
+				bool match =
+					filter.isEmpty() ||
+					item->child(j)
+						->text(0)
+						.toLower()
+						.contains(filter);
+				item->child(j)->setHidden(!match);
+				if (match)
+					anyChildVisible = true;
+			}
+
+			/* Also match folder name itself */
+			bool folderMatch =
+				item->text(0).toLower().contains(filter);
+
+			if (folderMatch && !filter.isEmpty()) {
+				/* Folder name matches: show all children */
+				for (int j = 0; j < item->childCount(); j++)
+					item->child(j)->setHidden(false);
+				item->setHidden(false);
+			} else {
+				item->setHidden(!filter.isEmpty() &&
+						!anyChildVisible);
+			}
+
+			/* Auto-expand folders when searching */
+			if (!filter.isEmpty() && !item->isHidden())
+				item->setExpanded(true);
+		}
+	}
+}
+
+void SceneFolderWidget::highlightActiveScene(const QString &name)
+{
+	activeSceneName = name;
+
+	QTreeWidgetItemIterator it(tree);
+	while (*it) {
+		if ((*it)->data(0, ROLE_ITEM_TYPE).toInt() == TYPE_SCENE &&
+		    (*it)->text(0) == name) {
+			tree->setCurrentItem(*it);
+			return;
+		}
+		++it;
 	}
 }
 
