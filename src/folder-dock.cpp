@@ -762,34 +762,35 @@ void SceneFolderWidget::saveConfig()
 	if (!tree)
 		return;
 
-	QJsonArray foldersArray;
+	/* Save the full top-level order: folders and scenes
+	   interleaved in their exact positions. */
+	QJsonArray topLevelOrder;
 
 	for (int i = 0; i < tree->topLevelItemCount(); i++) {
 		QTreeWidgetItem *item = tree->topLevelItem(i);
+		int type = item->data(0, ROLE_ITEM_TYPE).toInt();
 
-		if (item->data(0, ROLE_ITEM_TYPE).toInt() == TYPE_FOLDER) {
-			QJsonObject folder;
-			folder["name"] = item->text(0);
-			folder["expanded"] = item->isExpanded();
+		QJsonObject entry;
+		if (type == TYPE_FOLDER) {
+			entry["type"] = "folder";
+			entry["name"] = item->text(0);
+			entry["expanded"] = item->isExpanded();
 
 			QJsonArray scenes;
 			for (int j = 0; j < item->childCount(); j++)
 				scenes.append(item->child(j)->text(0));
-			folder["scenes"] = scenes;
-			foldersArray.append(folder);
+			entry["scenes"] = scenes;
+		} else {
+			entry["type"] = "scene";
+			entry["name"] = item->text(0);
 		}
+
+		topLevelOrder.append(entry);
 	}
 
 	QJsonObject root;
-	root["folders"] = foldersArray;
-
-	QJsonArray unassigned;
-	for (int i = 0; i < tree->topLevelItemCount(); i++) {
-		QTreeWidgetItem *item = tree->topLevelItem(i);
-		if (item->data(0, ROLE_ITEM_TYPE).toInt() == TYPE_SCENE)
-			unassigned.append(item->text(0));
-	}
-	root["unassigned_order"] = unassigned;
+	root["version"] = 2;
+	root["items"] = topLevelOrder;
 
 	QFile file(configFilePath());
 	if (file.open(QIODevice::WriteOnly)) {
@@ -811,19 +812,52 @@ void SceneFolderWidget::loadConfig()
 		return;
 
 	QJsonObject root = doc.object();
-	QJsonArray foldersArray = root["folders"].toArray();
+	int version = root["version"].toInt(1);
 
-	for (const QJsonValue &val : foldersArray) {
-		QJsonObject folderObj = val.toObject();
-		QString name = folderObj["name"].toString();
-		bool expanded = folderObj["expanded"].toBool(true);
+	if (version >= 2) {
+		/* V2 format: ordered list of folders and scenes */
+		QJsonArray items = root["items"].toArray();
+		for (const QJsonValue &val : items) {
+			QJsonObject entry = val.toObject();
+			QString type = entry["type"].toString();
+			QString name = entry["name"].toString();
 
-		QTreeWidgetItem *folder = createFolderItem(name);
-		tree->addTopLevelItem(folder);
-		folder->setExpanded(expanded);
+			if (type == "folder") {
+				bool expanded =
+					entry["expanded"].toBool(true);
+				QTreeWidgetItem *folder =
+					createFolderItem(name);
+				tree->addTopLevelItem(folder);
+				folder->setExpanded(expanded);
 
-		QJsonArray scenes = folderObj["scenes"].toArray();
-		for (const QJsonValue &sceneVal : scenes)
-			folder->addChild(createSceneItem(sceneVal.toString()));
+				QJsonArray scenes =
+					entry["scenes"].toArray();
+				for (const QJsonValue &s : scenes)
+					folder->addChild(createSceneItem(
+						s.toString()));
+			} else {
+				tree->addTopLevelItem(
+					createSceneItem(name));
+			}
+		}
+	} else {
+		/* V1 format: backwards compatibility */
+		QJsonArray foldersArray = root["folders"].toArray();
+		for (const QJsonValue &val : foldersArray) {
+			QJsonObject folderObj = val.toObject();
+			QString name = folderObj["name"].toString();
+			bool expanded =
+				folderObj["expanded"].toBool(true);
+
+			QTreeWidgetItem *folder = createFolderItem(name);
+			tree->addTopLevelItem(folder);
+			folder->setExpanded(expanded);
+
+			QJsonArray scenes =
+				folderObj["scenes"].toArray();
+			for (const QJsonValue &sceneVal : scenes)
+				folder->addChild(createSceneItem(
+					sceneVal.toString()));
+		}
 	}
 }
