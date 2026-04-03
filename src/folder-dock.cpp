@@ -85,6 +85,11 @@ SceneFolderWidget::~SceneFolderWidget()
 {
 	shuttingDown = true;
 	obs_frontend_remove_event_callback(onFrontendEvent, this);
+
+	if (filterClipboard) {
+		obs_data_array_release(filterClipboard);
+		filterClipboard = nullptr;
+	}
 }
 
 void SceneFolderWidget::shutdown()
@@ -259,108 +264,148 @@ void SceneFolderWidget::onCustomContextMenu(const QPoint &pos)
 
 	QTreeWidgetItem *item = tree->itemAt(pos);
 	QMenu menu(this);
+	QString sceneName = item ? item->text(0) : QString();
+	int type = item ? item->data(0, ROLE_ITEM_TYPE).toInt() : 0;
 
-	if (!item) {
-		/* Right-clicked on empty space */
-		QAction *newFolder = menu.addAction("New Folder");
-		connect(newFolder, &QAction::triggered, this,
-			&SceneFolderWidget::createFolder);
+	/* ---- Add Scene (always available) ---- */
+	QAction *addSceneAct = menu.addAction("Add Scene...");
+	connect(addSceneAct, &QAction::triggered, this,
+		&SceneFolderWidget::addScene);
+
+	if (type == TYPE_SCENE) {
+		/* ---- Duplicate ---- */
+		QAction *dupAct = menu.addAction("Duplicate");
+		connect(dupAct, &QAction::triggered, this,
+			[this, sceneName]() { duplicateScene(sceneName); });
+
+		/* ---- Copy / Paste Filters ---- */
+		QAction *copyFilters = menu.addAction("Copy Filters");
+		connect(copyFilters, &QAction::triggered, this,
+			[this, sceneName]() {
+				copySceneFilters(sceneName);
+			});
+
+		QAction *pasteFilters = menu.addAction("Paste Filters");
+		pasteFilters->setEnabled(filterClipboard != nullptr);
+		connect(pasteFilters, &QAction::triggered, this,
+			[this, sceneName]() {
+				pasteSceneFilters(sceneName);
+			});
 
 		menu.addSeparator();
 
-		QAction *sortAZ = menu.addAction("Sort All A-Z");
-		connect(sortAZ, &QAction::triggered, this,
-			&SceneFolderWidget::sortAlphabetically);
-	} else {
-		int type = item->data(0, ROLE_ITEM_TYPE).toInt();
+		/* ---- Rename ---- */
+		QAction *renameAct = menu.addAction("Rename");
+		connect(renameAct, &QAction::triggered, this,
+			[this, item]() { renameScene(item); });
 
-		if (type == TYPE_FOLDER) {
-			QAction *rename = menu.addAction("Rename Folder");
-			connect(rename, &QAction::triggered, this,
-				[this, item]() { renameFolder(item); });
+		/* ---- Remove ---- */
+		QAction *removeAct = menu.addAction("Remove");
+		connect(removeAct, &QAction::triggered, this,
+			[this, sceneName]() { removeScene(sceneName); });
 
-			QAction *del = menu.addAction("Delete Folder");
-			connect(del, &QAction::triggered, this,
-				[this, item]() { deleteFolder(item); });
+		menu.addSeparator();
 
-			menu.addSeparator();
+		/* ---- Projector ---- */
+		QAction *projAct = menu.addAction("Fullscreen Projector");
+		connect(projAct, &QAction::triggered, this,
+			[this, sceneName]() {
+				openSceneProjector(sceneName);
+			});
 
-			QAction *newFolder = menu.addAction("New Folder");
-			connect(newFolder, &QAction::triggered, this,
-				&SceneFolderWidget::createFolder);
+		/* ---- Screenshot ---- */
+		QAction *ssAct = menu.addAction("Screenshot Scene");
+		connect(ssAct, &QAction::triggered, this,
+			[this, sceneName]() { screenshotScene(sceneName); });
 
-			QAction *sortAZ = menu.addAction("Sort All A-Z");
-			connect(sortAZ, &QAction::triggered, this,
-				&SceneFolderWidget::sortAlphabetically);
+		menu.addSeparator();
 
-		} else if (type == TYPE_SCENE) {
-			QAction *switchTo =
-				menu.addAction("Switch to Scene");
-			connect(switchTo, &QAction::triggered, this,
-				[this, item]() {
-					switchToScene(item->text(0));
+		/* ---- Filters ---- */
+		QAction *filtersAct = menu.addAction("Filters");
+		connect(filtersAct, &QAction::triggered, this,
+			[this, sceneName]() {
+				openSceneFilters(sceneName);
+			});
+
+		menu.addSeparator();
+
+		/* ---- Folder management ---- */
+		if (item->parent()) {
+			QAction *removeFromFolderAct =
+				menu.addAction("Remove from Folder");
+			connect(removeFromFolderAct, &QAction::triggered,
+				this, [this, item]() {
+					removeFromFolder(item);
 				});
-
-			if (item->parent()) {
-				menu.addSeparator();
-				QAction *remove = menu.addAction(
-					"Remove from Folder");
-				connect(remove, &QAction::triggered, this,
-					[this, item]() {
-						removeFromFolder(item);
-					});
-			}
-
-			/* "Move to Folder" submenu */
-			QMenu *moveMenu = menu.addMenu("Move to Folder");
-			for (int i = 0; i < tree->topLevelItemCount(); i++) {
-				QTreeWidgetItem *folder =
-					tree->topLevelItem(i);
-				if (folder->data(0, ROLE_ITEM_TYPE).toInt() !=
-				    TYPE_FOLDER)
-					continue;
-				if (folder == item->parent())
-					continue;
-
-				QAction *moveAct =
-					moveMenu->addAction(folder->text(0));
-				connect(moveAct, &QAction::triggered, this,
-					[this, item, folder]() {
-						QTreeWidgetItem *parent =
-							item->parent();
-						if (parent) {
-							parent->removeChild(
-								item);
-						} else {
-							tree->takeTopLevelItem(
-								tree->indexOfTopLevelItem(
-									item));
-						}
-						folder->addChild(item);
-						folder->setExpanded(true);
-						saveTimer->start();
-					});
-			}
-			if (moveMenu->actions().isEmpty()) {
-				QAction *none =
-					moveMenu->addAction("(no folders)");
-				none->setEnabled(false);
-			}
-
-			menu.addSeparator();
-
-			QAction *newFolder = menu.addAction("New Folder");
-			connect(newFolder, &QAction::triggered, this,
-				&SceneFolderWidget::createFolder);
-
-			QAction *sortAZ = menu.addAction("Sort All A-Z");
-			connect(sortAZ, &QAction::triggered, this,
-				&SceneFolderWidget::sortAlphabetically);
 		}
+
+		/* "Move to Folder" submenu */
+		QMenu *moveMenu = menu.addMenu("Move to Folder");
+		for (int i = 0; i < tree->topLevelItemCount(); i++) {
+			QTreeWidgetItem *folder = tree->topLevelItem(i);
+			if (folder->data(0, ROLE_ITEM_TYPE).toInt() !=
+			    TYPE_FOLDER)
+				continue;
+			if (folder == item->parent())
+				continue;
+
+			QAction *moveAct =
+				moveMenu->addAction(folder->text(0));
+			connect(moveAct, &QAction::triggered, this,
+				[this, item, folder]() {
+					QTreeWidgetItem *parent =
+						item->parent();
+					if (parent) {
+						parent->removeChild(item);
+					} else {
+						tree->takeTopLevelItem(
+							tree->indexOfTopLevelItem(
+								item));
+					}
+					folder->addChild(item);
+					folder->setExpanded(true);
+					saveTimer->start();
+				});
+		}
+		if (moveMenu->actions().isEmpty()) {
+			QAction *none =
+				moveMenu->addAction("(no folders)");
+			none->setEnabled(false);
+		}
+
+	} else if (type == TYPE_FOLDER) {
+		menu.addSeparator();
+
+		QAction *rename = menu.addAction("Rename Folder");
+		connect(rename, &QAction::triggered, this,
+			[this, item]() { renameFolder(item); });
+
+		QAction *del = menu.addAction("Delete Folder");
+		connect(del, &QAction::triggered, this,
+			[this, item]() { deleteFolder(item); });
+
+		menu.addSeparator();
+
+		QAction *sortFolder = menu.addAction("Sort Folder A-Z");
+		connect(sortFolder, &QAction::triggered, this,
+			[this, item]() {
+				item->sortChildren(0, Qt::AscendingOrder);
+				saveTimer->start();
+			});
 	}
 
-	if (!menu.actions().isEmpty())
-		menu.exec(tree->viewport()->mapToGlobal(pos));
+	menu.addSeparator();
+
+	/* ---- Always available at bottom ---- */
+	QAction *newFolder = menu.addAction("New Folder");
+	connect(newFolder, &QAction::triggered, this,
+		&SceneFolderWidget::createFolder);
+
+	QAction *sortAZ = menu.addAction("Sort All A-Z");
+	connect(sortAZ, &QAction::triggered, this,
+		&SceneFolderWidget::sortAlphabetically);
+
+	menu.exec(tree->viewport()->mapToGlobal(pos));
 }
 
 void SceneFolderWidget::createFolder()
@@ -434,6 +479,176 @@ void SceneFolderWidget::removeFromFolder(QTreeWidgetItem *item)
 		tree->addTopLevelItem(item);
 		saveTimer->start();
 	}
+}
+
+/* ------------------------------------------------------------------ */
+/*  Scene actions (feature parity with OBS scenes dock)               */
+/* ------------------------------------------------------------------ */
+
+void SceneFolderWidget::addScene()
+{
+	bool ok;
+	QString name = QInputDialog::getText(this, "Add Scene",
+					     "Scene name:", QLineEdit::Normal,
+					     "", &ok);
+	if (!ok || name.trimmed().isEmpty())
+		return;
+
+	name = name.trimmed();
+
+	/* Check if a scene with this name already exists */
+	OBSSourceAutoRelease existing =
+		obs_get_source_by_name(name.toUtf8().constData());
+	if (existing) {
+		QMessageBox::warning(
+			this, "Scene Folders",
+			"A source with that name already exists.");
+		return;
+	}
+
+	obs_scene_t *scene = obs_scene_create(name.toUtf8().constData());
+	if (scene) {
+		obs_source_t *source = obs_scene_get_source(scene);
+		obs_frontend_set_current_scene(source);
+		obs_scene_release(scene);
+		/* refreshSceneList will pick it up via
+		   OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED */
+	}
+}
+
+void SceneFolderWidget::duplicateScene(const QString &sceneName)
+{
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(sceneName.toUtf8().constData());
+	if (!source)
+		return;
+
+	obs_scene_t *scene = obs_scene_from_source(source);
+	if (!scene)
+		return;
+
+	/* Generate a unique name */
+	QString newName = sceneName + " (Copy)";
+	int counter = 2;
+	while (true) {
+		OBSSourceAutoRelease check =
+			obs_get_source_by_name(newName.toUtf8().constData());
+		if (!check)
+			break;
+		newName = sceneName +
+			  QStringLiteral(" (Copy %1)").arg(counter++);
+	}
+
+	obs_scene_t *dup = obs_scene_duplicate(
+		scene, newName.toUtf8().constData(), OBS_SCENE_DUP_REFS);
+	if (dup) {
+		obs_source_t *dupSource = obs_scene_get_source(dup);
+		obs_frontend_set_current_scene(dupSource);
+		obs_scene_release(dup);
+	}
+}
+
+void SceneFolderWidget::renameScene(QTreeWidgetItem *item)
+{
+	if (!item)
+		return;
+
+	QString oldName = item->text(0);
+
+	bool ok;
+	QString newName = QInputDialog::getText(
+		this, "Rename Scene", "New name:", QLineEdit::Normal, oldName,
+		&ok);
+	if (!ok || newName.trimmed().isEmpty())
+		return;
+
+	newName = newName.trimmed();
+	if (newName == oldName)
+		return;
+
+	/* Check for duplicate name */
+	OBSSourceAutoRelease existing =
+		obs_get_source_by_name(newName.toUtf8().constData());
+	if (existing) {
+		QMessageBox::warning(
+			this, "Scene Folders",
+			"A source with that name already exists.");
+		return;
+	}
+
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(oldName.toUtf8().constData());
+	if (source) {
+		obs_source_set_name(source, newName.toUtf8().constData());
+		item->setText(0, newName);
+		saveTimer->start();
+	}
+}
+
+void SceneFolderWidget::removeScene(const QString &sceneName)
+{
+	QMessageBox::StandardButton reply = QMessageBox::question(
+		this, "Remove Scene",
+		QStringLiteral("Are you sure you want to remove \"%1\"?")
+			.arg(sceneName),
+		QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+	if (reply != QMessageBox::Yes)
+		return;
+
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(sceneName.toUtf8().constData());
+	if (source)
+		obs_source_remove(source);
+	/* refreshSceneList will remove it from the tree */
+}
+
+void SceneFolderWidget::openSceneFilters(const QString &sceneName)
+{
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(sceneName.toUtf8().constData());
+	if (source)
+		obs_frontend_open_source_filters(source);
+}
+
+void SceneFolderWidget::copySceneFilters(const QString &sceneName)
+{
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(sceneName.toUtf8().constData());
+	if (!source)
+		return;
+
+	if (filterClipboard) {
+		obs_data_array_release(filterClipboard);
+		filterClipboard = nullptr;
+	}
+
+	filterClipboard = obs_source_backup_filters(source);
+}
+
+void SceneFolderWidget::pasteSceneFilters(const QString &sceneName)
+{
+	if (!filterClipboard)
+		return;
+
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(sceneName.toUtf8().constData());
+	if (source)
+		obs_source_restore_filters(source, filterClipboard);
+}
+
+void SceneFolderWidget::screenshotScene(const QString &sceneName)
+{
+	OBSSourceAutoRelease source =
+		obs_get_source_by_name(sceneName.toUtf8().constData());
+	if (source)
+		obs_frontend_take_source_screenshot(source);
+}
+
+void SceneFolderWidget::openSceneProjector(const QString &sceneName)
+{
+	obs_frontend_open_projector("Scene", -1, nullptr,
+				    sceneName.toUtf8().constData());
 }
 
 void SceneFolderWidget::sortAlphabetically()

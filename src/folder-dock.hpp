@@ -38,18 +38,29 @@ private:
 	QTreeWidgetItem *createSceneItem(const QString &name);
 	QTreeWidgetItem *findFolderItem(const QString &name);
 
+	/* Folder actions */
 	void createFolder();
 	void renameFolder(QTreeWidgetItem *item);
 	void deleteFolder(QTreeWidgetItem *item);
 	void removeFromFolder(QTreeWidgetItem *item);
 	void sortAlphabetically();
+
+	/* Scene actions (feature parity with OBS scenes dock) */
+	void addScene();
+	void duplicateScene(const QString &sceneName);
+	void renameScene(QTreeWidgetItem *item);
+	void removeScene(const QString &sceneName);
+	void openSceneFilters(const QString &sceneName);
+	void copySceneFilters(const QString &sceneName);
+	void pasteSceneFilters(const QString &sceneName);
+	void screenshotScene(const QString &sceneName);
+	void openSceneProjector(const QString &sceneName);
+
 	void filterScenes(const QString &text);
 	void highlightActiveScene(const QString &name);
-	void updateItemStyles();
 	void switchToScene(const QString &sceneName);
 
 	QString activeSceneName;
-
 	QString configFilePath();
 
 	QLineEdit *searchBar = nullptr;
@@ -57,6 +68,9 @@ private:
 	QTimer *saveTimer = nullptr;
 	bool shuttingDown = false;
 	bool ignoreSceneChange = false;
+
+	/* Filter clipboard */
+	obs_data_array_t *filterClipboard = nullptr;
 
 	static constexpr int ROLE_ITEM_TYPE = Qt::UserRole + 1;
 	static constexpr int TYPE_FOLDER = 1;
